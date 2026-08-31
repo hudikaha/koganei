@@ -1,0 +1,11 @@
+.DS_Store
+
+# Downloaded source material and files derived from it.
+/gikai/
+/chinjo/koganei_petitions/
+/chinjo/corrections/
+
+# Generated publication tree, downloaded OCR models, and compiled helper.
+/chinjo/publish/
+/chinjo/tools/
+/chinjo/bin/vision_ocr
