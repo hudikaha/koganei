@@ -281,7 +281,7 @@ File.open(OUTPUT_HTML, "w") do |file|
     p.legend{font-size:12px;margin:.4rem 0;max-width:100rem;line-height:1.6}
     @page{size:A3 landscape;margin:6mm}
     @media print{
-      body{margin:0}h1{font-size:15pt;margin:0 0 2mm}.download{display:none}p.legend{font-size:6.5pt;margin:0 0 2mm;line-height:1.35}
+      body{margin:0}h1{font-size:15pt;margin:0 0 2mm}.download{display:none}p.legend{font-size:6.4pt;margin:0 0 2mm;line-height:1.35}
       .table-wrap{overflow:visible}table{width:100%;font-size:6.4pt;table-layout:fixed}
       th,td{padding:.45mm}.petition-id{width:17mm}.date{width:19mm}.title-col{width:103mm}.result{width:12mm}.member-col{width:7mm}
       th.title,td.title{min-width:0}
@@ -290,8 +290,8 @@ File.open(OUTPUT_HTML, "w") do |file|
     }
     </style></head><body>
     <h1>庁舎・福祉会館関連陳情 議員別賛否</h1>
-    <p class="legend">会派略称：#{legend_items.map { |item| CGI.escapeHTML(item) }.join('　')}</p>
     <p class="download"><a href="building_votes.csv" download>CSVをダウンロード</a></p>
+    <p class="legend">会派略称：#{legend_items.map { |item| CGI.escapeHTML(item) }.join('　')}</p>
     <div class="table-wrap"><table>
     <colgroup><col class="petition-id"><col class="date"><col class="title-col"><col class="result">#{member_order.map { "<col class=\"member-col\">" }.join}</colgroup>
     <thead>
