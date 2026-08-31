@@ -17,12 +17,12 @@ patterns = {
 }
 
 rows = CSV.read(File.join(data, "petitions.csv"), headers: true)
-suspects = rows.filter_map do |row|
+suspects = rows.map do |row|
   next unless row["building_relevance"] == "yes"
-  reasons = patterns.filter_map { |name, pattern| name if row["title"].to_s.match?(pattern) }
+  reasons = patterns.map { |name, pattern| name if row["title"].to_s.match?(pattern) }.compact
   next if reasons.empty?
   [row["petition_id"], row["title"], row["image_path"], reasons.join(" / ")]
-end
+end.compact
 
 CSV.open(output, "w", write_headers: true,
          headers: %w[petition_id title image_path reasons]) do |csv|

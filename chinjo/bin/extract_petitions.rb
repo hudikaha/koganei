@@ -84,6 +84,9 @@ def extract_petitioner(text)
 end
 
 def relevance(title, petitioner)
+  return ["no", ""] if compact(title).include?("冷却ミスト")
+  return ["yes", "住田たつのりの陳情は全件を庁舎・福祉会館関連として扱う"] if petitioner == "住田たつのり"
+
   pattern = /新庁舎|福祉会館|新福祉会館|庁舎建設|庁舎等建設|庁舎問題|庁舎床面積|暫定庁舎|第二庁舎.*耐震|本庁舎.*耐震|現設計|見直し案/
   return ["yes", "庁舎・福祉会館建設関連"] if compact(title).match?(pattern)
 

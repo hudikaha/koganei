@@ -1,4 +1,5 @@
 RUBY := ruby
+CHROME ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 DPI ?= 300
 JOBS ?= 4
 PUBLISH_DIR ?= publish/chinjo
@@ -11,6 +12,7 @@ RSYNC_FLAGS ?= -a --checksum --delete --itemize-changes --no-times --omit-dir-ti
 	download references official-results \
 	images ocr-models ocr vision-ocr \
 	csv audit-titles check-titles split-pdfs html \
+	votes votes-pdf \
 	clean-generated
 
 # Standard local release build. Heavy network/OCR work stays opt-in.
@@ -19,6 +21,7 @@ all: prepare
 prepare:
 	$(MAKE) csv
 	$(MAKE) split-pdfs
+	$(MAKE) votes
 	$(MAKE) html
 	$(RUBY) bin/build_publish.rb $(PUBLISH_DIR)
 
@@ -79,6 +82,16 @@ split-pdfs:
 
 html:
 	$(RUBY) bin/csv_to_html.rb
+
+# Council-member votes on petitions related to the city hall/welfare hall.
+votes:
+	$(RUBY) bin/extract_council_votes.rb
+
+# Printable A3 landscape edition of the council-member vote table.
+votes-pdf: votes
+	"$(CHROME)" --headless=new --disable-gpu --no-pdf-header-footer \
+		--print-to-pdf="$(abspath koganei_petitions/building_votes.pdf)" \
+		"file://$(abspath koganei_petitions/building_votes.html)"
 
 # Publication. Always inspect deploy-dry-run before deploy.
 deploy-dry-run: prepare

@@ -112,11 +112,11 @@ end
 present = rows.map { |row| row["petition_id"] }.to_h { |id| [id, true] }
 official.each do |id, records|
   next if present[id]
-  title_source = records.map { |row| row["official_title"].to_s }.reject(&:empty?).filter_map do |candidate_title|
+  title_source = records.map { |row| row["official_title"].to_s }.reject(&:empty?).map do |candidate_title|
     next if normalize(candidate_title).length < 12
     source_path = newsletter_texts.find { |_path, text| text.include?(normalize(candidate_title)) }&.first
     source_path ? [candidate_title, source_path] : nil
-  end.max_by { |candidate_title, _source_path| normalize(candidate_title).length }
+  end.compact.max_by { |candidate_title, _source_path| normalize(candidate_title).length }
   next unless title_source
   title, source = title_source
   decision = records.select { |row| !row["decision_result"].to_s.empty? }.max_by { |row| decision_sort_key(row) }
@@ -242,6 +242,13 @@ end
 
 rows.uniq! { |row| row["petition_id"] }
 rows.each do |row|
+  if row["petition_id"] == "6陳情第50号"
+    row["building_relevance"] = "no"
+    row["relevance_note"] = "冷却ミスト設置は庁舎問題の対象外"
+  elsif row["petitioner"] == "住田たつのり"
+    row["building_relevance"] = "yes"
+    row["relevance_note"] = "住田たつのりの陳情は全件を庁舎・福祉会館関連として扱う"
+  end
   %w[date petitioner title].each do |field|
     next unless row[field].to_s.empty?
     row[field] = "要画像確認（原画像から自動判読できず）"

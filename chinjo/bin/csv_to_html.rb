@@ -79,6 +79,7 @@ html = <<~HTML
   <body>
     <h1>小金井市議会 陳情書索引</h1>
     <p>OCRによる索引です。「要画像確認」と表示された項目はリンク先画像で確認してください。採決欄が空欄でも、継続審査中または未採決の場合があります。</p>
+    <p><a href="building_votes.html">庁舎・福祉会館関連陳情の議員別賛否を見る</a></p>
     <p>
       <label><input type="checkbox" id="related-only" checked> 庁舎・福祉会館関連のみ表示</label>
       <label><input type="checkbox" id="show-details"> 注意などを表示</label>

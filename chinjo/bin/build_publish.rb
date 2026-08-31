@@ -14,16 +14,22 @@ end
 
 index = File.join(data, "index.html")
 csv = File.join(data, "petitions.csv")
+votes_html = File.join(data, "building_votes.html")
+votes_csv = File.join(data, "building_votes.csv")
 abort "missing #{index}; run make html" unless File.file?(index)
 abort "missing #{csv}; run make csv" unless File.file?(csv)
+abort "missing #{votes_html}; run make votes" unless File.file?(votes_html)
+abort "missing #{votes_csv}; run make votes" unless File.file?(votes_csv)
 
-links = File.read(index).scan(/href="([^"]+)"/).flatten.uniq
+links = [index, votes_html].flat_map { |html| File.read(html).scan(/href="([^"]+)"/).flatten }.uniq
 links.reject! { |path| path.match?(%r{\A(?:[a-z]+:|#)}) }
 
 FileUtils.rm_rf(destination)
 FileUtils.mkdir_p(destination)
 FileUtils.cp(index, File.join(destination, "index.html"))
 FileUtils.cp(csv, File.join(destination, "petitions.csv"))
+FileUtils.cp(votes_html, File.join(destination, "building_votes.html"))
+FileUtils.cp(votes_csv, File.join(destination, "building_votes.csv"))
 
 links.each do |relative|
   clean = Pathname(relative).cleanpath.to_s

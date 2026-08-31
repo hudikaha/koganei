@@ -63,9 +63,10 @@ manifest.select { |row| row["kind"] == "results" }.each do |row|
     next if title.empty?
 
     neighborhood = lines[[index - 1, 0].max..[index + 1, lines.length - 1].min].join(" ")
-    date_match = compact(neighborhood).match(/(\d{1,2})月(\d{1,2})日/)
-    month = date_match&.[](1)
-    day = date_match&.[](2)
+    # 件名に日付が含まれる場合でも、公式表の右端にある採決日を採る。
+    date_match = compact(neighborhood).scan(/(\d{1,2})月(\d{1,2})日/).last
+    month = date_match&.[](0)
+    day = date_match&.[](1)
     decision_date = month && day ? format("%04d-%02d-%02d", western_year, month.to_i, day.to_i) : ""
     # Official tables often insert spaces between every glyph (for example
     # "採       択" and "承    認").  Search the compacted neighborhood so
