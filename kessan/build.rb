@@ -159,14 +159,31 @@ def attach_details(pdf, kind, roots)
     # wide characters make Ruby character offsets differ from pdftotext's
     # visual columns, so anchor at the department and take the last numbered
     # item before it instead of slicing at a guessed character position.
-    department = /[（(]\s*([^）)]*(?:課|局|室|館|所|センター))\s*[）)]\s+([\d,]+)\s*\z/
-    if (match = line.match(/.*\s(\d+)\s+([^\d].*?)\s+#{department}/))
+    # Department labels are often shortened to fit the column (for example,
+    # "子育て支援"), so do not require a conventional 「○○課」 suffix.
+    # Digits and commas are excluded to distinguish these labels from the
+    # parenthesized totals used by section rows.
+    department = /[（(]\s*([^\d,）)]*)\s*[）)]\s+([\d,]+)\s*\z/
+    if (match = line.match(/#{department}/)) && buffer
+      prefix = line[0...match.begin(0)].to_s.split(/\s{3,}/).last.to_s.strip
+      text = (buffer + prefix).gsub(/[[:space:]　]+/, " ").strip
+      unless text.empty?
+        detail = { "name" => text, "department" => compact_name(match[1]), "amount" => amount_values(match[2]).first }
+        target = stack[2]
+        target["details"] << detail if target && !target["details"].include?(detail)
+      end
+      buffer = nil
+    elsif (match = line.match(/.*\s(\d+)\s+([^\d].*?)\s+#{department}/))
       text = match[2].gsub(/[[:space:]　]+/, " ").strip
-      next if text.match?(/\A[,\d()（）]/)
+      next if text.empty? || text.match?(/\A[,\d()（）]/)
       detail = { "name" => text, "department" => compact_name(match[3]), "amount" => amount_values(match[4]).first }
       target = stack[2]
       target["details"] << detail if target && !target["details"].include?(detail)
       buffer = nil
+    elsif (tail = line.rstrip.split(/\s{3,}/).last.to_s.strip).match?(/\A\d+\s+[^\d(].*\z/)
+      buffer = tail.sub(/\A\d+\s+/, "")
+    elsif buffer && !tail.empty? && !tail.match?(/[\d()（）]/)
+      buffer << tail
     else
       buffer = nil
     end
@@ -252,6 +269,14 @@ def each_node(nodes, &block)
   end
 end
 
+accounts.each do |account|
+  each_node(account["expense"]) do |node|
+    next unless node["level"] == 3 && node["amount"] != 0
+    node["detail_total"] = node["details"].sum { |detail| detail["amount"] }
+    node["detail_difference"] = node["detail_total"] - node["amount"]
+  end
+end
+
 node_count = 0
 detail_count = 0
 accounts.each do |account|
@@ -298,6 +323,7 @@ html = <<~HTML
       .legend{list-style:none;padding:0;margin:0;max-height:620px;overflow:auto}.legend button{display:grid;grid-template-columns:1rem 1fr auto;gap:.5rem;width:100%;border:0;border-radius:7px;text-align:left;align-items:center;padding:.5rem}
       .legend button:hover,.legend button:focus{background:#edf5f8}.swatch{width:.8rem;height:.8rem;border-radius:2px}.money{font-variant-numeric:tabular-nums;white-space:nowrap}.minor{color:#68757e;font-size:.85rem}
       .details{margin-top:1rem;border-top:1px solid #d7dde2;padding-top:.8rem}.details h3{font-size:1rem;margin:.2rem 0 .6rem}.details ul{columns:2;column-gap:2rem;margin:0;padding-left:1.3rem}.details li{break-inside:avoid;margin:.25rem 0}.detail-amount{white-space:nowrap;color:#52606a}
+      .detail-check{padding:.65rem .8rem;border-radius:8px;margin:.4rem 0 .8rem;font-weight:600}.detail-check.ok{background:#e8f5ec;color:#245c35}.detail-check.warn{background:#fff0d8;color:#7a4300;border:1px solid #e4b866}
       .empty{text-align:center;padding:4rem 1rem;color:#68757e}.source{margin-top:1rem;font-size:.9rem}a{color:#15607e}
       @media(max-width:760px){.chart-grid{grid-template-columns:1fr}.legend{max-height:none}.details ul{columns:1}}
     </style>
@@ -343,7 +369,7 @@ html = <<~HTML
         const section=document.createElement('section');section.className='drill-panel';
         const heading=document.createElement('h2');heading.textContent=parent?`${parent.name}の内訳`:`${account.name}・${kind==='revenue'?'歳入':'歳出'}`;section.append(heading);
         const grid=document.createElement('div');grid.className='chart-grid';const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 600 600');svg.setAttribute('role','img');svg.setAttribute('class','chart');const list=document.createElement('ul');list.className='legend';grid.append(svg,list);section.append(grid);$('charts').append(section);
-        const appendDetails=()=>{if(!parent||!parent.details.length)return;const details=document.createElement('div');details.className='details';details.innerHTML=`<h3>${kind==='expense'?'事業別の決算額':'決算書の備考'}</h3>`;const ul=document.createElement('ul');parent.details.forEach(item=>{const li=document.createElement('li');li.innerHTML=`${item.name}${item.department?` <span class="minor">（${item.department}）</span>`:''} <span class="detail-amount">${yen.format(item.amount)}円</span>`;ul.append(li)});details.append(ul);section.append(details)};
+        const appendDetails=()=>{if(!parent||(!parent.details.length&&!Number.isFinite(parent.detail_difference)))return;const details=document.createElement('div');details.className='details';details.innerHTML=`<h3>${kind==='expense'?'事業別の決算額':'決算書の備考'}</h3>`;if(kind==='expense'&&Number.isFinite(parent.detail_difference)){const check=document.createElement('p'),diff=parent.detail_difference;check.className=`detail-check ${diff===0?'ok':'warn'}`;check.textContent=diff===0?`事業別合計 ${yen.format(parent.detail_total)}円は、支出済額と一致しています。`:`注意：抽出した事業別合計は${yen.format(parent.detail_total)}円で、支出済額と${yen.format(Math.abs(diff))}円${diff<0?'不足':'超過'}しています。抽出漏れまたは誤読の可能性があります。`;details.append(check)}if(parent.details.length){const ul=document.createElement('ul');parent.details.forEach(item=>{const li=document.createElement('li');li.innerHTML=`${item.name}${item.department?` <span class="minor">（${item.department}）</span>`:''} <span class="detail-amount">${yen.format(item.amount)}円</span>`;ul.append(li)});details.append(ul)}section.append(details)};
         nodes=nodes.filter(n=>n.amount>0);
         if(!nodes.length){svg.innerHTML='<text x="300" y="300" text-anchor="middle" class="empty">これより下の内訳はありません</text>';appendDetails();return section}
         const sum=nodes.reduce((s,n)=>s+n.amount,0);let angle=0;
