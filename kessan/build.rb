@@ -141,23 +141,32 @@ def attach_details(pdf, kind, roots)
       end
     end
 
-    right = line[(kind == :revenue ? 180 : 184)..].to_s.strip
-    next if right.empty?
-    next if right.match?(/\A(?:備考|説\s*明|円|款|項|目|節|[-－]\d+[-－])\z/)
-
-    if (match = right.match(/\A(.+?)\s+[（(]?\s*((?:△|-)?\d[\d,]*)\s*[）)]?\s*\z/))
-      text = [buffer, match[1]].compact.join
-      buffer = nil
-      text = text.gsub(/[[:space:]　]+/, " ").strip
-      text = text.sub(/\A(?:[,\d]+\s+)+/, "")
-      next if text.empty? || text.match?(/\A[\d.]+\z/)
-      target = kind == :revenue ? (stack[3] || stack[2]) : stack[2]
+    if kind == :revenue
+      right = line[180..].to_s.strip
+      next if right.empty?
+      match = right.match(/\A(.+?)\s+((?:△|-)?\d[\d,]*)\s*\z/)
+      next unless match
+      text = match[1].gsub(/[[:space:]　]+/, " ").strip.sub(/\A(?:[,\d]+\s+)+/, "")
+      next if text.empty? || text.match?(/\A[\d.,()（）]+\z/)
+      target = stack[3] || stack[2]
       next unless target
-      amount = amount_values(match[2]).first
-      detail = { "name" => text, "amount" => amount }
-      target["details"] << detail unless target["details"].any? { |item| item == detail }
-    elsif kind == :expense && (buffer || right.match?(/\A(?:\(?\s*\d+\)?|（\s*\d+\s*）)\s*\S/))
-      buffer = [buffer, right].compact.join
+      detail = { "name" => text, "amount" => amount_values(match[2]).first }
+      target["details"] << detail unless target["details"].include?(detail)
+      next
+    end
+
+    # Only rows with a responsible department are project summaries.  Japanese
+    # wide characters make Ruby character offsets differ from pdftotext's
+    # visual columns, so anchor at the department and take the last numbered
+    # item before it instead of slicing at a guessed character position.
+    department = /[（(]\s*([^）)]*(?:課|局|室|館|所|センター))\s*[）)]\s+([\d,]+)\s*\z/
+    if (match = line.match(/.*\s(\d+)\s+([^\d].*?)\s+#{department}/))
+      text = match[2].gsub(/[[:space:]　]+/, " ").strip
+      next if text.match?(/\A[,\d()（）]/)
+      detail = { "name" => text, "department" => compact_name(match[3]), "amount" => amount_values(match[4]).first }
+      target = stack[2]
+      target["details"] << detail if target && !target["details"].include?(detail)
+      buffer = nil
     else
       buffer = nil
     end
@@ -334,7 +343,7 @@ html = <<~HTML
         const section=document.createElement('section');section.className='drill-panel';
         const heading=document.createElement('h2');heading.textContent=parent?`${parent.name}の内訳`:`${account.name}・${kind==='revenue'?'歳入':'歳出'}`;section.append(heading);
         const grid=document.createElement('div');grid.className='chart-grid';const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 600 600');svg.setAttribute('role','img');svg.setAttribute('class','chart');const list=document.createElement('ul');list.className='legend';grid.append(svg,list);section.append(grid);$('charts').append(section);
-        const appendDetails=()=>{if(!parent||!parent.details.length)return;const details=document.createElement('div');details.className='details';details.innerHTML='<h3>決算書の説明</h3>';const ul=document.createElement('ul');parent.details.forEach(item=>{const li=document.createElement('li');li.innerHTML=`${item.name} <span class="detail-amount">${yen.format(item.amount)}円</span>`;ul.append(li)});details.append(ul);section.append(details)};
+        const appendDetails=()=>{if(!parent||!parent.details.length)return;const details=document.createElement('div');details.className='details';details.innerHTML=`<h3>${kind==='expense'?'事業別の決算額':'決算書の備考'}</h3>`;const ul=document.createElement('ul');parent.details.forEach(item=>{const li=document.createElement('li');li.innerHTML=`${item.name}${item.department?` <span class="minor">（${item.department}）</span>`:''} <span class="detail-amount">${yen.format(item.amount)}円</span>`;ul.append(li)});details.append(ul);section.append(details)};
         nodes=nodes.filter(n=>n.amount>0);
         if(!nodes.length){svg.innerHTML='<text x="300" y="300" text-anchor="middle" class="empty">これより下の内訳はありません</text>';appendDetails();return section}
         const sum=nodes.reduce((s,n)=>s+n.amount,0);let angle=0;
