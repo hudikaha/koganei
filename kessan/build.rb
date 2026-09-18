@@ -158,8 +158,11 @@ def attach_details(pdf, kind, roots)
   collect.call(roots)
   stack = []
   buffer = nil
+  buffer_number = nil
 
-  extract_text(pdf).each_line do |line|
+  extract_text(pdf).split("\f").each do |page_text|
+    source_page = page_text.scan(/[-－]\s*(\d+)\s*[-－]/).flatten.map(&:to_i).max
+    page_text.each_line do |line|
     if (parts = row_parts(line, kind))
       level = parts[0]
       if (node = queues[level].shift)
@@ -195,24 +198,29 @@ def attach_details(pdf, kind, roots)
       prefix = line[0...match.begin(0)].to_s.split(/\s{3,}/).last.to_s.strip
       text = (buffer + prefix).gsub(/[[:space:]　]+/, " ").strip
       unless text.empty?
-        detail = { "name" => text, "department" => compact_name(match[1]), "amount" => amount_values(match[2]).first }
+        detail = { "number" => buffer_number, "name" => text, "department" => compact_name(match[1]), "amount" => amount_values(match[2]).first, "page" => source_page }
         target = stack[2]
         target["details"] << detail if target && !target["details"].include?(detail)
       end
       buffer = nil
+      buffer_number = nil
     elsif (match = line.match(/.*\s(\d+)\s+([^\d].*?)\s+#{department}/))
       text = match[2].gsub(/[[:space:]　]+/, " ").strip
       next if text.empty? || text.match?(/\A[,\d()（）]/)
-      detail = { "name" => text, "department" => compact_name(match[3]), "amount" => amount_values(match[4]).first }
+      detail = { "number" => match[1].to_i, "name" => text, "department" => compact_name(match[3]), "amount" => amount_values(match[4]).first, "page" => source_page }
       target = stack[2]
       target["details"] << detail if target && !target["details"].include?(detail)
       buffer = nil
-    elsif (tail = line.rstrip.split(/\s{3,}/).last.to_s.strip).match?(/\A\d+\s+[^\d(].*\z/)
-      buffer = tail.sub(/\A\d+\s+/, "")
+      buffer_number = nil
+    elsif (start = (tail = line.rstrip.split(/\s{3,}/).last.to_s.strip).match(/\A(\d+)\s+([^\d(].*)\z/))
+      buffer_number = start[1].to_i
+      buffer = start[2]
     elsif buffer && !tail.empty? && !tail.match?(/[\d()（）]/)
       buffer << tail
     else
       buffer = nil
+      buffer_number = nil
+    end
     end
   end
 end
@@ -267,7 +275,7 @@ def attach_expense_breakdowns(pdf, roots)
       amount_text = right.select { |x, text| x >= 1120 && text.match?(/[\d,]/) }.map(&:last).join
       amount = amount_values(amount_text).first
       if !name.empty? && amount
-        current_section = { "name" => name, "amount" => amount, "items" => [] }
+        current_section = { "number" => section_number[1].to_i, "name" => name, "amount" => amount, "items" => [] }
         current_project["sections"] << current_section
       end
       item_name = nil
@@ -320,18 +328,22 @@ def page_map(pdf, kind, roots)
   extract_text(pdf).split("\f").each do |page|
     first_new = nil
     first_any = nil
+    page_nodes = []
     page.each_line do |line|
       next unless (parts = row_parts(line, kind))
       level, = parts
       continued = parts[5]
       node = queues[level].shift
       next unless node
+      page_nodes << node
       first_any ||= node
       first_new ||= node if level <= 3 && !continued
     end
+    printed_pages = page.scan(/[-－]\s*(\d+)\s*[-－]/).flatten.map(&:to_i).uniq
+    page_nodes.each { |node| node["page"] ||= printed_pages.min } unless printed_pages.empty?
     target = first_new || first_any
     next unless target
-    page.scan(/[-－]\s*(\d+)\s*[-－]/).flatten.map(&:to_i).uniq.each do |printed_page|
+    printed_pages.each do |printed_page|
       mapping[printed_page.to_s] = target["id"]
     end
   end
@@ -465,8 +477,14 @@ html = <<~HTML
     <script>
       const DATA=JSON.parse(document.getElementById('budget-data').textContent);
       const COLORS=['#2878b5','#ef8a47','#4ca66b','#d45d79','#8a68b8','#d4aa32','#40a6a6','#bd6d38','#7089a8','#9c7a62','#6aaf45','#c95fa4','#7672c7','#d07b95','#699d89','#a18b35','#4d93d0','#dc6951','#71944a','#9a73b5','#ba8743','#558fa0'];
-      let account=DATA.accounts[0],kind='revenue',path=[],selected=null;
+      let account=DATA.accounts[0],kind='revenue',path=[],selected=null,restoring=false;
       const yen=new Intl.NumberFormat('ja-JP');
+      const LEVEL={1:'款',2:'項',3:'目',4:'節'};
+      const ACCOUNT_SLUG={general:'ippan','national-health':'kokuho','nursing-care':'kaigo','late-elderly':'koki'};
+      const nodeLabel=n=>`${LEVEL[n.level]||''} ${n.code}　${n.name}`;
+      const hierarchyKey=(a,nodes)=>`${ACCOUNT_SLUG[a.id]}-${nodes.filter(n=>n.level<=3).map(n=>n.code).join('-')}`;
+      const jigyoKey=(a,nodes,item)=>`${ACCOUNT_SLUG[a.id]}-${nodes.filter(n=>n.level<=3).map(n=>n.code).join('-')}-${item.number}`;
+      function setLocation(page,jigyo,replace=false){const u=new URL(location.href);page?u.searchParams.set('page',page):u.searchParams.delete('page');jigyo?u.searchParams.set('jigyo',jigyo):u.searchParams.delete('jigyo');history[replace?'replaceState':'pushState']({},'',u)}
       const $=id=>document.getElementById(id);
       const roots=()=>account[kind];
       const current=()=>path.length?path[path.length-1]:null;
@@ -475,41 +493,47 @@ html = <<~HTML
       function polar(cx,cy,r,a){const q=(a-90)*Math.PI/180;return [cx+r*Math.cos(q),cy+r*Math.sin(q)]}
       function arc(a0,a1){if(a1-a0>359.999)return 'M300 55 A245 245 0 1 0 300 545 A245 245 0 1 0 300 55 Z';const [x0,y0]=polar(300,300,245,a1),[x1,y1]=polar(300,300,245,a0);return `M300 300 L${x0} ${y0} A245 245 0 ${a1-a0>180?1:0} 0 ${x1} ${y1} Z`}
       function renderButtons(){
-        $('accounts').innerHTML='';DATA.accounts.forEach(a=>{const b=document.createElement('button');b.textContent=a.name;b.className=a===account?'active':'';b.onclick=()=>{account=a;path=[];selected=null;render()};$('accounts').append(b)});
-        $('kinds').innerHTML='';[['revenue','歳入'],['expense','歳出']].forEach(([k,label])=>{const b=document.createElement('button');b.textContent=label;b.className=k===kind?'active':'';b.onclick=()=>{kind=k;path=[];selected=null;render()};$('kinds').append(b)});
+        $('accounts').innerHTML='';DATA.accounts.forEach(a=>{const b=document.createElement('button');b.textContent=a.name;b.className=a===account?'active':'';b.onclick=()=>{account=a;path=[];selected=null;setLocation(null,null);render()};$('accounts').append(b)});
+        $('kinds').innerHTML='';[['revenue','歳入'],['expense','歳出']].forEach(([k,label])=>{const b=document.createElement('button');b.textContent=label;b.className=k===kind?'active':'';b.onclick=()=>{kind=k;path=[];selected=null;setLocation(null,null);render()};$('kinds').append(b)});
         const pages=Object.keys(account.pages[kind]).map(Number).sort((a,b)=>a-b);$('page-status').textContent=pages.length?`対応ページ：${pages[0]}〜${pages[pages.length-1]}（左右どちらでも可）`:'対応ページなし';
       }
       function renderCrumbs(){
-        const nav=$('breadcrumbs');nav.innerHTML='';const base=document.createElement('button');base.textContent=`${account.name}・${kind==='revenue'?'歳入':'歳出'}`;base.onclick=()=>{path=[];selected=null;render()};nav.append(base);
-        path.forEach((node,i)=>{nav.append(document.createTextNode('›'));const b=document.createElement('button');b.textContent=node.name;b.onclick=()=>{path=path.slice(0,i+1);selected=null;render()};nav.append(b)});
+        const nav=$('breadcrumbs');nav.innerHTML='';const base=document.createElement('button');base.textContent=`${account.name}・${kind==='revenue'?'歳入':'歳出'}`;base.onclick=()=>{path=[];selected=null;setLocation(null,null);render()};nav.append(base);
+        path.forEach((node,i)=>{nav.append(document.createTextNode('›'));const b=document.createElement('button');b.textContent=nodeLabel(node);b.onclick=()=>{path=path.slice(0,i+1);selected=null;setLocation(node.page,hierarchyKey(account,path));render()};nav.append(b)});
       }
       function renderChart(nodes,parent,depth){
         const section=document.createElement('section');section.className='drill-panel';
-        const heading=document.createElement('h2');heading.textContent=parent?`${parent.name}の内訳`:`${account.name}・${kind==='revenue'?'歳入':'歳出'}`;section.append(heading);
+        const heading=document.createElement('h2');heading.textContent=parent?`${nodeLabel(parent)}の内訳`:`${account.name}・${kind==='revenue'?'歳入':'歳出'}`;section.append(heading);
         const grid=document.createElement('div');grid.className='chart-grid';const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 600 600');svg.setAttribute('role','img');svg.setAttribute('class','chart');const list=document.createElement('ul');list.className='legend';grid.append(svg,list);section.append(grid);$('charts').append(section);
         const appendDetails=()=>{
           if(!parent||(!parent.details.length&&!Number.isFinite(parent.detail_difference)))return;
           const details=document.createElement('div');details.className='details';details.innerHTML=`<h3>${kind==='expense'?'事業・節・個別支出':'決算書の備考'}</h3>`;
           if(kind==='expense'&&Number.isFinite(parent.detail_difference)){const check=document.createElement('p'),diff=parent.detail_difference;check.className=`detail-check ${diff===0?'ok':'warn'}`;check.textContent=diff===0?`事業別合計 ${yen.format(parent.detail_total)}円は、支出済額と一致しています。`:`注意：抽出した事業別合計は${yen.format(parent.detail_total)}円で、支出済額と${yen.format(Math.abs(diff))}円${diff<0?'不足':'超過'}しています。抽出漏れまたは誤読の可能性があります。`;details.append(check)}
-          if(parent.details.length){const list=document.createElement('div');list.className='details-list';parent.details.forEach(item=>{const project=document.createElement('details');project.className='project-detail';const summary=document.createElement('summary');summary.innerHTML=`${item.name}${item.department?` <span class="minor">（${item.department}）</span>`:''} <span class="detail-amount">${yen.format(item.amount)}円</span>`;project.append(summary);if(Number.isFinite(item.section_difference)&&item.section_difference!==0){const check=document.createElement('p'),diff=item.section_difference;check.className='detail-check warn';check.textContent=`注意：節合計が事業額と${yen.format(Math.abs(diff))}円${diff<0?'不足':'超過'}しています。`;project.append(check)}if(item.sections?.length){const sections=document.createElement('ul');sections.className='section-list';item.sections.forEach(part=>{const li=document.createElement('li');li.innerHTML=`<strong>${part.name}</strong> <span class="detail-amount">${yen.format(part.amount)}円</span>`;if(part.items?.length){const items=document.createElement('ul');items.className='item-list';part.items.forEach(entry=>{const row=document.createElement('li');row.innerHTML=`${entry.name} <span class="detail-amount">${yen.format(entry.amount)}円</span>`;items.append(row)});li.append(items)}if(Number.isFinite(part.item_difference)&&part.item_difference!==0){const warning=document.createElement('p');warning.className='detail-check warn';warning.textContent=`注意：個別支出合計が節額と${yen.format(Math.abs(part.item_difference))}円${part.item_difference<0?'不足':'超過'}しています。`;li.append(warning)}sections.append(li)});project.append(sections)}list.append(project)});details.append(list)}section.append(details)
+          if(parent.details.length){const list=document.createElement('div');list.className='details-list';parent.details.forEach(item=>{const project=document.createElement('details');project.className='project-detail';project.dataset.number=item.number||'';project.dataset.key=jigyoKey(account,path.slice(0,depth),item);project.addEventListener('toggle',()=>{if(restoring)return;if(project.open)setLocation(item.page||parent.page,project.dataset.key);else if(new URL(location.href).searchParams.get('jigyo')===project.dataset.key)setLocation(item.page||parent.page,null)});const summary=document.createElement('summary');summary.innerHTML=`事業 ${item.number||'—'}　${item.name}${item.department?` <span class="minor">（${item.department}）</span>`:''} <span class="detail-amount">${yen.format(item.amount)}円</span>`;project.append(summary);if(Number.isFinite(item.section_difference)&&item.section_difference!==0){const check=document.createElement('p'),diff=item.section_difference;check.className='detail-check warn';check.textContent=`注意：節合計が事業額と${yen.format(Math.abs(diff))}円${diff<0?'不足':'超過'}しています。`;project.append(check)}if(item.sections?.length){const sections=document.createElement('ul');sections.className='section-list';item.sections.forEach(part=>{const li=document.createElement('li');li.innerHTML=`<strong>節 ${part.number}　${part.name}</strong> <span class="detail-amount">${yen.format(part.amount)}円</span>`;if(part.items?.length){const items=document.createElement('ul');items.className='item-list';part.items.forEach(entry=>{const row=document.createElement('li');row.innerHTML=`${entry.name} <span class="detail-amount">${yen.format(entry.amount)}円</span>`;items.append(row)});li.append(items)}if(Number.isFinite(part.item_difference)&&part.item_difference!==0){const warning=document.createElement('p');warning.className='detail-check warn';warning.textContent=`注意：個別支出合計が節額と${yen.format(Math.abs(part.item_difference))}円${part.item_difference<0?'不足':'超過'}しています。`;li.append(warning)}sections.append(li)});project.append(sections)}list.append(project)});details.append(list)}section.append(details)
         };
         nodes=nodes.filter(n=>n.amount>0);
         if(!nodes.length){svg.innerHTML='<text x="300" y="300" text-anchor="middle" class="empty">これより下の内訳はありません</text>';appendDetails();return section}
         const sum=nodes.reduce((s,n)=>s+n.amount,0);let angle=0;
         nodes.forEach((node,i)=>{const next=angle+node.amount/sum*360;const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',arc(angle,next));p.setAttribute('fill',COLORS[i%COLORS.length]);p.setAttribute('class','slice'+(selected===node.id?' selected':''));p.setAttribute('tabindex','0');p.setAttribute('aria-label',`${node.name} ${yen.format(node.amount)}円`);p.onclick=()=>openNode(node,depth);p.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openNode(node,depth)}};svg.append(p);angle=next;
-          const li=document.createElement('li'),b=document.createElement('button');b.innerHTML=`<span class="swatch" style="background:${COLORS[i%COLORS.length]}"></span><span>${node.name}<span class="minor"> ${node.children.length?'内訳あり':''}</span></span><span class="money">${yen.format(node.amount)}円<br><span class="minor">${(node.amount/sum*100).toFixed(1)}%</span></span>`;b.onclick=()=>openNode(node,depth);li.append(b);list.append(li)});
+          const li=document.createElement('li'),b=document.createElement('button');b.innerHTML=`<span class="swatch" style="background:${COLORS[i%COLORS.length]}"></span><span>${nodeLabel(node)}<span class="minor"> ${node.children.length?'内訳あり':''}</span></span><span class="money">${yen.format(node.amount)}円<br><span class="minor">${(node.amount/sum*100).toFixed(1)}%</span></span>`;b.onclick=()=>openNode(node,depth);li.append(b);list.append(li)});
         const hole=document.createElementNS('http://www.w3.org/2000/svg','circle');hole.setAttribute('cx',300);hole.setAttribute('cy',300);hole.setAttribute('r',105);hole.setAttribute('fill','white');svg.append(hole);
-        const title=document.createElementNS('http://www.w3.org/2000/svg','text');title.setAttribute('x',300);title.setAttribute('y',292);title.setAttribute('text-anchor','middle');title.setAttribute('class','center-title');title.textContent=parent?parent.name:(kind==='revenue'?'歳入':'歳出');svg.append(title);
+          const title=document.createElementNS('http://www.w3.org/2000/svg','text');title.setAttribute('x',300);title.setAttribute('y',292);title.setAttribute('text-anchor','middle');title.setAttribute('class','center-title');title.textContent=parent?nodeLabel(parent):(kind==='revenue'?'歳入':'歳出');svg.append(title);
         const value=document.createElementNS('http://www.w3.org/2000/svg','text');value.setAttribute('x',300);value.setAttribute('y',318);value.setAttribute('text-anchor','middle');value.setAttribute('class','center-value');value.textContent=yen.format(parent?parent.amount:sum)+'円';svg.append(value);appendDetails();return section;
       }
       function renderCharts(){const box=$('charts');box.innerHTML='';renderChart(roots(),null,0);path.forEach((node,i)=>renderChart(node.children,node,i+1))}
-      function openNode(node,depth){selected=node.id;if(node.children.length||node.details.length){path=path.slice(0,depth);path.push(node);selected=null;render(true)}else{render()} }
+      function openNode(node,depth){selected=node.id;const targetPath=[...path.slice(0,depth),node],key=node.level<=3?hierarchyKey(account,targetPath):null;if(node.children.length||node.details.length){path=targetPath;selected=null;setLocation(node.page,key);render(true)}else{setLocation(node.page,key);render()} }
       function flatten(){const out=[];DATA.accounts.forEach(a=>['revenue','expense'].forEach(k=>{const walk=(nodes,trail)=>nodes.forEach(n=>{out.push({a,k,n,trail});n.details.forEach(detail=>{out.push({a,k,n,trail,detail});detail.sections?.forEach(part=>{out.push({a,k,n,trail,detail,sub:part});part.items?.forEach(sub=>out.push({a,k,n,trail,detail,sub}))})});walk(n.children,[...trail,n])});walk(a[k],[])}));return out}
       const SEARCH=flatten();
-      function jumpToPage(event){event.preventDefault();const raw=$('page-number').value.replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)),page=raw.match(/[0-9]+/)?.[0],id=page&&account.pages[kind][page];if(!id){$('page-status').textContent='この会計・歳入歳出には該当ページがありません';return}const hit=SEARCH.find(x=>!x.detail&&x.a===account&&x.k===kind&&x.n.id===id);if(!hit)return;path=(hit.n.children.length||hit.n.details.length)?[...hit.trail,hit.n]:hit.trail;selected=path.includes(hit.n)?null:hit.n.id;render(true);$('page-status').textContent=`原本${page}ページ付近：${hit.n.name}`}
-      function renderSearch(){const q=$('search').value.replace(/[\s　]/g,'').toLowerCase(),box=$('results');box.innerHTML='';if(!q){box.style.display='none';return}const found=SEARCH.filter(x=>(x.sub?.name||x.detail?.name||x.n.name).replace(/[\s　]/g,'').toLowerCase().includes(q)).slice(0,40);found.forEach(x=>{const label=x.sub?.name||x.detail?.name||x.n.name,b=document.createElement('button');b.innerHTML=`${label}<span class="result-path">${x.a.name} › ${x.k==='revenue'?'歳入':'歳出'} › ${[...x.trail,x.n].map(n=>n.name).join(' › ')}</span>`;b.onclick=()=>{account=x.a;kind=x.k;path=(x.detail||x.n.children.length||x.n.details.length)?[...x.trail,x.n]:x.trail;selected=path.includes(x.n)?null:x.n.id;$('search').value=label;box.style.display='none';render(true);if(x.detail)requestAnimationFrame(()=>{const project=[...document.querySelectorAll('.project-detail')].find(el=>el.querySelector('summary')?.textContent.includes(x.detail.name));if(project){project.open=true;project.scrollIntoView({behavior:'smooth',block:'start'})}})};box.append(b)});box.style.display=found.length?'block':'none'}
+      SEARCH.forEach(x=>{if(x.detail&&x.k==='expense')x.jigyo=jigyoKey(x.a,[...x.trail,x.n],x.detail);else if(!x.detail&&x.k==='expense'&&x.n.level<=3)x.jigyo=hierarchyKey(x.a,[...x.trail,x.n])});
+      function pageHit(page,preferCurrent=true){const candidates=[];DATA.accounts.forEach(a=>['revenue','expense'].forEach(k=>{const id=a.pages[k][page];if(id){const hit=SEARCH.find(x=>!x.detail&&x.a===a&&x.k===k&&x.n.id===id);if(hit)candidates.push(hit)}}));return (preferCurrent&&candidates.find(x=>x.a===account&&x.k===kind))||candidates[0]}
+      function firstProject(hit,page){if(!hit)return null;const id=hit.a.pages[hit.k][page],paired=Object.keys(hit.a.pages[hit.k]).filter(p=>hit.a.pages[hit.k][p]===id).map(Number),descendants=SEARCH.filter(x=>x.detail&&x.a===hit.a&&x.k===hit.k&&[...x.trail,x.n].some(n=>n.id===hit.n.id));return descendants.find(x=>paired.includes(x.detail.page))||descendants[0]}
+      function showHit(hit,scroll=true){account=hit.a;kind=hit.k;path=(hit.n.children.length||hit.n.details.length)?[...hit.trail,hit.n]:hit.trail;selected=path.includes(hit.n)?null:hit.n.id;render(scroll)}
+      function openProject(hit,scroll=true){restoring=true;showHit(hit,false);requestAnimationFrame(()=>{const project=document.querySelector(`.project-detail[data-key="${CSS.escape(hit.jigyo)}"]`);if(project){project.open=true;if(scroll)project.scrollIntoView({behavior:'smooth',block:'start'})}setTimeout(()=>restoring=false,0)})}
+      function jumpToPage(event){event.preventDefault();const raw=$('page-number').value.replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)),page=raw.match(/[0-9]+/)?.[0],hit=page&&pageHit(page);if(!hit){$('page-status').textContent='該当ページがありません';return}const project=firstProject(hit,page);setLocation(page,project?.jigyo);project?openProject(project):showHit(hit);$('page-status').textContent=`原本${page}ページ付近：${hit.n.name}`}
+      function renderSearch(){const q=$('search').value.replace(/[\s　]/g,'').toLowerCase(),box=$('results');box.innerHTML='';if(!q){box.style.display='none';return}const found=SEARCH.filter(x=>(x.sub?.name||x.detail?.name||x.n.name).replace(/[\s　]/g,'').toLowerCase().includes(q)).slice(0,40);found.forEach(x=>{const label=x.sub?.name||x.detail?.name||x.n.name,b=document.createElement('button');b.innerHTML=`${label}<span class="result-path">${x.a.name} › ${x.k==='revenue'?'歳入':'歳出'} › ${[...x.trail,x.n].map(nodeLabel).join(' › ')}</span>`;b.onclick=()=>{$('search').value=label;box.style.display='none';if(x.detail){setLocation(x.detail.page||x.n.page,x.jigyo);openProject(x)}else{setLocation(x.n.page,x.jigyo);showHit(x)}};box.append(b)});box.style.display=found.length?'block':'none'}
+      function applyUrl(){const params=new URL(location.href).searchParams,page=params.get('page'),key=params.get('jigyo'),jhit=key&&SEARCH.find(x=>x.jigyo===key);if(jhit){const resolvedPage=jhit.detail?.page||jhit.n.page;setLocation(resolvedPage,jhit.jigyo,true);jhit.detail?openProject(jhit,false):showHit(jhit,false);$('page-number').value=resolvedPage||'';return}if(page){const hit=pageHit(page);if(!hit){render();$('page-status').textContent=`原本${page}ページは見つかりません`;return}const project=firstProject(hit,page);setLocation(page,project?.jigyo,true);project?openProject(project,false):showHit(hit,false);$('page-number').value=page;return}render()}
       function render(scroll=false){renderButtons();renderCrumbs();renderCharts();const src=account.sources[kind];$('source').innerHTML=`出典：<a href="${encodeURI(src)}">${src}</a>（支出済額／収入済額）`;if(scroll)requestAnimationFrame(()=>document.querySelector('.drill-panel:last-child')?.scrollIntoView({behavior:'smooth',block:'start'}))}
-      $('search').addEventListener('input',renderSearch);$('page-jump').addEventListener('submit',jumpToPage);document.addEventListener('click',e=>{if(!e.target.closest('.search-wrap'))$('results').style.display='none'});render();
+      $('search').addEventListener('input',renderSearch);$('page-jump').addEventListener('submit',jumpToPage);document.addEventListener('click',e=>{if(!e.target.closest('.search-wrap'))$('results').style.display='none'});addEventListener('popstate',applyUrl);applyUrl();
     </script>
   </body>
   </html>
