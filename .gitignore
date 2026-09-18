@@ -9,3 +9,6 @@
 /chinjo/publish/
 /chinjo/tools/
 /chinjo/bin/vision_ocr
+/kessan/*.pdf
+/kessan/data.json
+/kessan/index.html
