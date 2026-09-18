@@ -31,6 +31,33 @@ def extract_text(pdf)
   output
 end
 
+def extract_tsv_rows(pdf)
+  output, status = Open3.capture2("pdftotext", "-tsv", pdf, "-")
+  abort "pdftotext TSV failed: #{pdf}" unless status.success?
+  pages = Hash.new { |hash, key| hash[key] = [] }
+  output.each_line do |line|
+    fields = line.chomp.split("\t", 12)
+    next unless fields.length == 12 && fields[0] == "5"
+    page = fields[1].to_i
+    x = fields[6].to_f
+    top = fields[7].to_f
+    next if fields[11].start_with?("###")
+    pages[page] << [top, x, fields[11]]
+  end
+  pages.sort.flat_map do |page, words|
+    rows = []
+    words.sort_by(&:first).each do |top, x, text|
+      row = rows.reverse.find { |candidate| (candidate[0] - top).abs <= 0.35 }
+      if row
+        row[1] << [x, text]
+      else
+        rows << [top, [[x, text]]]
+      end
+    end
+    rows.sort_by(&:first).map { |top, row_words| [page, top, row_words.sort_by(&:first)] }
+  end
+end
+
 def row_parts(line, kind)
   line = line.chomp
   match = line.match(/\A(\s*)((?:\d+\s+)*)(\d+)\s*([^\d\s].*?)\s{2,}((?:△|-)?\s*\d[\d,].*)\z/)
@@ -190,6 +217,96 @@ def attach_details(pdf, kind, roots)
   end
 end
 
+def attach_expense_breakdowns(pdf, roots)
+  projects = Hash.new { |hash, key| hash[key] = [] }
+  visit = lambda do |nodes|
+    nodes.each do |node|
+      node["details"].each do |detail|
+        detail["sections"] = []
+        projects[[compact_name(detail["name"]), detail["amount"]]] << detail
+      end
+      visit.call(node["children"])
+    end
+  end
+  visit.call(roots)
+
+  current_project = nil
+  current_section = nil
+  project_name = nil
+  item_name = nil
+
+  extract_tsv_rows(pdf).each do |_page, _top, words|
+    right = words.select { |x, _| x >= 945 }
+    next if right.empty?
+    first_x, first_text = right.first
+
+    if first_x.between?(945, 960) && first_text.match?(/\A\d+\z/)
+      project_name = right.select { |x, text| x > first_x && x < 1057 && text !~ /[()（）]/ }.map(&:last).join
+      current_project = nil
+      current_section = nil
+      item_name = nil
+    elsif project_name
+      project_name << right.select { |x, text| x.between?(960, 1056) && text !~ /[()（）]/ }.map(&:last).join
+    end
+
+    if project_name && right.any? { |x, text| x.between?(1050, 1120) && text.include?("(") } &&
+       right.any? { |x, text| x.between?(1050, 1120) && text.include?(")") }
+      amount_text = right.select { |x, text| x >= 1120 && text.match?(/[\d,]/) }.map(&:last).join
+      amount = amount_values(amount_text).first
+      key = [compact_name(project_name), amount]
+      current_project = projects[key].shift if amount
+      project_name = nil
+      current_section = nil
+      item_name = nil
+      next
+    end
+
+    section_number = right.find { |x, text| x.between?(972, 986) && text.match?(/\A\d+\z/) }
+    if current_project && section_number && right.any? { |x, text| x >= 1090 && text.include?("(") }
+      name = right.select { |x, text| x >= 987 && x < 1090 && text !~ /[()（）]/ }.map(&:last).join
+      amount_text = right.select { |x, text| x >= 1120 && text.match?(/[\d,]/) }.map(&:last).join
+      amount = amount_values(amount_text).first
+      if !name.empty? && amount
+        current_section = { "name" => name, "amount" => amount, "items" => [] }
+        current_project["sections"] << current_section
+      end
+      item_name = nil
+      next
+    end
+
+    next unless current_section
+    label = right.select { |x, text| x >= 990 && x < 1120 && text !~ /[()（）]/ }.map(&:last).join
+    amount_text = right.select { |x, text| x >= 1120 && text.match?(/[\d,]/) }.map(&:last).join
+    amount = amount_values(amount_text).first
+    if amount && (!label.empty? || item_name)
+      name = [item_name, label].compact.join
+      current_section["items"] << { "name" => name, "amount" => amount } unless name.empty?
+      item_name = nil
+    elsif !label.empty? && !label.match?(/\A\d+(?:需用費|役務費|委託料|扶助費|報酬|旅費)/)
+      item_name = [item_name, label].compact.join
+    end
+  end
+
+  projects.each_value do |details|
+    details.each { |detail| detail.delete("sections") if detail["sections"].empty? }
+  end
+  checker = lambda do |nodes|
+    nodes.each do |node|
+      node["details"].each do |detail|
+        next unless detail["sections"]
+        detail["sections"].each do |section|
+          section["item_total"] = section["items"].sum { |item| item["amount"] }
+          section["item_difference"] = section["item_total"] - section["amount"]
+        end
+        detail["section_total"] = detail["sections"].sum { |section| section["amount"] }
+        detail["section_difference"] = detail["section_total"] - detail["amount"]
+      end
+      checker.call(node["children"])
+    end
+  end
+  checker.call(roots)
+end
+
 def page_map(pdf, kind, roots)
   queues = Hash.new { |hash, key| hash[key] = [] }
   collect = lambda do |nodes|
@@ -229,6 +346,7 @@ accounts = ACCOUNTS.map do |name, (prefix, id)|
   expense = parse_statement(expense_pdf, :expense, id)
   attach_details(revenue_pdf, :revenue, revenue)
   attach_details(expense_pdf, :expense, expense)
+  attach_expense_breakdowns(expense_pdf, expense)
   {
     "id" => id,
     "name" => name,
@@ -322,10 +440,10 @@ html = <<~HTML
       .center-title{font-weight:700;font-size:15px}.center-value{font-size:13px;fill:#52606a}
       .legend{list-style:none;padding:0;margin:0;max-height:620px;overflow:auto}.legend button{display:grid;grid-template-columns:1rem 1fr auto;gap:.5rem;width:100%;border:0;border-radius:7px;text-align:left;align-items:center;padding:.5rem}
       .legend button:hover,.legend button:focus{background:#edf5f8}.swatch{width:.8rem;height:.8rem;border-radius:2px}.money{font-variant-numeric:tabular-nums;white-space:nowrap}.minor{color:#68757e;font-size:.85rem}
-      .details{margin-top:1rem;border-top:1px solid #d7dde2;padding-top:.8rem}.details h3{font-size:1rem;margin:.2rem 0 .6rem}.details ul{columns:2;column-gap:2rem;margin:0;padding-left:1.3rem}.details li{break-inside:avoid;margin:.25rem 0}.detail-amount{white-space:nowrap;color:#52606a}
+      .details{margin-top:1rem;border-top:1px solid #d7dde2;padding-top:.8rem}.details h3{font-size:1rem;margin:.2rem 0 .6rem}.details-list{display:grid;gap:.55rem}.project-detail{border:1px solid #d7dde2;border-radius:8px;padding:.5rem .7rem}.project-detail summary{cursor:pointer;font-weight:600}.section-list,.item-list{margin:.5rem 0 .2rem 1.2rem;padding-left:1rem}.section-list>li{margin:.55rem 0}.item-list li{margin:.2rem 0}.detail-amount{white-space:nowrap;color:#52606a}
       .detail-check{padding:.65rem .8rem;border-radius:8px;margin:.4rem 0 .8rem;font-weight:600}.detail-check.ok{background:#e8f5ec;color:#245c35}.detail-check.warn{background:#fff0d8;color:#7a4300;border:1px solid #e4b866}
       .empty{text-align:center;padding:4rem 1rem;color:#68757e}.source{margin-top:1rem;font-size:.9rem}a{color:#15607e}
-      @media(max-width:760px){.chart-grid{grid-template-columns:1fr}.legend{max-height:none}.details ul{columns:1}}
+      @media(max-width:760px){.chart-grid{grid-template-columns:1fr}.legend{max-height:none}}
     </style>
   </head>
   <body>
@@ -369,7 +487,12 @@ html = <<~HTML
         const section=document.createElement('section');section.className='drill-panel';
         const heading=document.createElement('h2');heading.textContent=parent?`${parent.name}の内訳`:`${account.name}・${kind==='revenue'?'歳入':'歳出'}`;section.append(heading);
         const grid=document.createElement('div');grid.className='chart-grid';const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 600 600');svg.setAttribute('role','img');svg.setAttribute('class','chart');const list=document.createElement('ul');list.className='legend';grid.append(svg,list);section.append(grid);$('charts').append(section);
-        const appendDetails=()=>{if(!parent||(!parent.details.length&&!Number.isFinite(parent.detail_difference)))return;const details=document.createElement('div');details.className='details';details.innerHTML=`<h3>${kind==='expense'?'事業別の決算額':'決算書の備考'}</h3>`;if(kind==='expense'&&Number.isFinite(parent.detail_difference)){const check=document.createElement('p'),diff=parent.detail_difference;check.className=`detail-check ${diff===0?'ok':'warn'}`;check.textContent=diff===0?`事業別合計 ${yen.format(parent.detail_total)}円は、支出済額と一致しています。`:`注意：抽出した事業別合計は${yen.format(parent.detail_total)}円で、支出済額と${yen.format(Math.abs(diff))}円${diff<0?'不足':'超過'}しています。抽出漏れまたは誤読の可能性があります。`;details.append(check)}if(parent.details.length){const ul=document.createElement('ul');parent.details.forEach(item=>{const li=document.createElement('li');li.innerHTML=`${item.name}${item.department?` <span class="minor">（${item.department}）</span>`:''} <span class="detail-amount">${yen.format(item.amount)}円</span>`;ul.append(li)});details.append(ul)}section.append(details)};
+        const appendDetails=()=>{
+          if(!parent||(!parent.details.length&&!Number.isFinite(parent.detail_difference)))return;
+          const details=document.createElement('div');details.className='details';details.innerHTML=`<h3>${kind==='expense'?'事業・節・個別支出':'決算書の備考'}</h3>`;
+          if(kind==='expense'&&Number.isFinite(parent.detail_difference)){const check=document.createElement('p'),diff=parent.detail_difference;check.className=`detail-check ${diff===0?'ok':'warn'}`;check.textContent=diff===0?`事業別合計 ${yen.format(parent.detail_total)}円は、支出済額と一致しています。`:`注意：抽出した事業別合計は${yen.format(parent.detail_total)}円で、支出済額と${yen.format(Math.abs(diff))}円${diff<0?'不足':'超過'}しています。抽出漏れまたは誤読の可能性があります。`;details.append(check)}
+          if(parent.details.length){const list=document.createElement('div');list.className='details-list';parent.details.forEach(item=>{const project=document.createElement('details');project.className='project-detail';const summary=document.createElement('summary');summary.innerHTML=`${item.name}${item.department?` <span class="minor">（${item.department}）</span>`:''} <span class="detail-amount">${yen.format(item.amount)}円</span>`;project.append(summary);if(Number.isFinite(item.section_difference)){const check=document.createElement('p'),diff=item.section_difference;check.className=`detail-check ${diff===0?'ok':'warn'}`;check.textContent=diff===0?'節合計は事業額と一致しています。':`注意：節合計が事業額と${yen.format(Math.abs(diff))}円${diff<0?'不足':'超過'}しています。`;project.append(check)}if(item.sections?.length){const sections=document.createElement('ul');sections.className='section-list';item.sections.forEach(part=>{const li=document.createElement('li');li.innerHTML=`<strong>${part.name}</strong> <span class="detail-amount">${yen.format(part.amount)}円</span>`;if(part.items?.length){const items=document.createElement('ul');items.className='item-list';part.items.forEach(entry=>{const row=document.createElement('li');row.innerHTML=`${entry.name} <span class="detail-amount">${yen.format(entry.amount)}円</span>`;items.append(row)});li.append(items)}if(Number.isFinite(part.item_difference)&&part.item_difference!==0){const warning=document.createElement('p');warning.className='detail-check warn';warning.textContent=`注意：個別支出合計が節額と${yen.format(Math.abs(part.item_difference))}円${part.item_difference<0?'不足':'超過'}しています。`;li.append(warning)}sections.append(li)});project.append(sections)}list.append(project)});details.append(list)}section.append(details)
+        };
         nodes=nodes.filter(n=>n.amount>0);
         if(!nodes.length){svg.innerHTML='<text x="300" y="300" text-anchor="middle" class="empty">これより下の内訳はありません</text>';appendDetails();return section}
         const sum=nodes.reduce((s,n)=>s+n.amount,0);let angle=0;
@@ -381,10 +504,10 @@ html = <<~HTML
       }
       function renderCharts(){const box=$('charts');box.innerHTML='';renderChart(roots(),null,0);path.forEach((node,i)=>renderChart(node.children,node,i+1))}
       function openNode(node,depth){selected=node.id;if(node.children.length||node.details.length){path=path.slice(0,depth);path.push(node);selected=null;render(true)}else{render()} }
-      function flatten(){const out=[];DATA.accounts.forEach(a=>['revenue','expense'].forEach(k=>{const walk=(nodes,trail)=>nodes.forEach(n=>{out.push({a,k,n,trail});n.details.forEach(detail=>out.push({a,k,n,trail,detail}));walk(n.children,[...trail,n])});walk(a[k],[])}));return out}
+      function flatten(){const out=[];DATA.accounts.forEach(a=>['revenue','expense'].forEach(k=>{const walk=(nodes,trail)=>nodes.forEach(n=>{out.push({a,k,n,trail});n.details.forEach(detail=>{out.push({a,k,n,trail,detail});detail.sections?.forEach(part=>{out.push({a,k,n,trail,detail,sub:part});part.items?.forEach(sub=>out.push({a,k,n,trail,detail,sub}))})});walk(n.children,[...trail,n])});walk(a[k],[])}));return out}
       const SEARCH=flatten();
       function jumpToPage(event){event.preventDefault();const raw=$('page-number').value.replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)),page=raw.match(/[0-9]+/)?.[0],id=page&&account.pages[kind][page];if(!id){$('page-status').textContent='この会計・歳入歳出には該当ページがありません';return}const hit=SEARCH.find(x=>!x.detail&&x.a===account&&x.k===kind&&x.n.id===id);if(!hit)return;path=(hit.n.children.length||hit.n.details.length)?[...hit.trail,hit.n]:hit.trail;selected=path.includes(hit.n)?null:hit.n.id;render(true);$('page-status').textContent=`原本${page}ページ付近：${hit.n.name}`}
-      function renderSearch(){const q=$('search').value.replace(/[\s　]/g,'').toLowerCase(),box=$('results');box.innerHTML='';if(!q){box.style.display='none';return}const found=SEARCH.filter(x=>(x.detail?.name||x.n.name).replace(/[\s　]/g,'').toLowerCase().includes(q)).slice(0,40);found.forEach(x=>{const label=x.detail?.name||x.n.name,b=document.createElement('button');b.innerHTML=`${label}<span class="result-path">${x.a.name} › ${x.k==='revenue'?'歳入':'歳出'} › ${[...x.trail,x.n].map(n=>n.name).join(' › ')}</span>`;b.onclick=()=>{account=x.a;kind=x.k;path=(x.detail||x.n.children.length||x.n.details.length)?[...x.trail,x.n]:x.trail;selected=path.includes(x.n)?null:x.n.id;$('search').value=label;box.style.display='none';render(true)};box.append(b)});box.style.display=found.length?'block':'none'}
+      function renderSearch(){const q=$('search').value.replace(/[\s　]/g,'').toLowerCase(),box=$('results');box.innerHTML='';if(!q){box.style.display='none';return}const found=SEARCH.filter(x=>(x.sub?.name||x.detail?.name||x.n.name).replace(/[\s　]/g,'').toLowerCase().includes(q)).slice(0,40);found.forEach(x=>{const label=x.sub?.name||x.detail?.name||x.n.name,b=document.createElement('button');b.innerHTML=`${label}<span class="result-path">${x.a.name} › ${x.k==='revenue'?'歳入':'歳出'} › ${[...x.trail,x.n].map(n=>n.name).join(' › ')}</span>`;b.onclick=()=>{account=x.a;kind=x.k;path=(x.detail||x.n.children.length||x.n.details.length)?[...x.trail,x.n]:x.trail;selected=path.includes(x.n)?null:x.n.id;$('search').value=label;box.style.display='none';render(true);if(x.detail)requestAnimationFrame(()=>{const project=[...document.querySelectorAll('.project-detail')].find(el=>el.querySelector('summary')?.textContent.includes(x.detail.name));if(project){project.open=true;project.scrollIntoView({behavior:'smooth',block:'start'})}})};box.append(b)});box.style.display=found.length?'block':'none'}
       function render(scroll=false){renderButtons();renderCrumbs();renderCharts();const src=account.sources[kind];$('source').innerHTML=`出典：<a href="${encodeURI(src)}">${src}</a>（支出済額／収入済額）`;if(scroll)requestAnimationFrame(()=>document.querySelector('.drill-panel:last-child')?.scrollIntoView({behavior:'smooth',block:'start'}))}
       $('search').addEventListener('input',renderSearch);$('page-jump').addEventListener('submit',jumpToPage);document.addEventListener('click',e=>{if(!e.target.closest('.search-wrap'))$('results').style.display='none'});render();
     </script>
