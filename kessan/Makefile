@@ -4,7 +4,7 @@ CURL ?= curl
 REMOTE ?= fujikawa.org
 REMOTE_DIR ?= fujikawa/koganei/kessan
 PUBLIC_URL ?= https://fujikawa.org/koganei/kessan/
-RELEASE_FILES ?= kessan/build.rb kessan/Makefile
+RELEASE_FILES ?= kessan/build.rb kessan/Makefile kessan/AGENTS.md
 DETAIL_PDFS = \
 	03.一般歳入事項別明細書.pdf 04.一般歳出事項別明細書.pdf \
 	03.国保歳入事項別明細書.pdf 04.国保歳出事項別明細書.pdf \
