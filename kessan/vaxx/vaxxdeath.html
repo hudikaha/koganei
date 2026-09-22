@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小金井市 年齢調整死亡数・予防接種費推移</title>
+<style>
+  body { font-family: sans-serif; background: #fff; color: #111; margin: 2rem; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 1rem; text-align: center; }
+  .legend { display: flex; gap: 20px; margin-bottom: 16px; font-size: 16px; flex-wrap: wrap; align-items: center; justify-content: center; }
+  .legend span { display: flex; align-items: center; gap: 8px; }
+  .swatch { width: 14px; height: 14px; border-radius: 2px; display: inline-block; }
+  .line-swatch { width: 32px; height: 3px; background: #E24B4A; display: inline-block; }
+  .note { font-size: 14px; color: #444; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h1>小金井市　年齢調整死亡数・予防接種費（ワクチン種別）推移（2010〜2025年）</h1>
+
+<div class="legend">
+  <span><span class="swatch" style="background:#3B0F70;"></span>新型コロナ</span>
+  <span><span class="swatch" style="background:#B63779;"></span>HPVワクチン</span>
+  <span><span class="swatch" style="background:#FE9F6D;"></span>インフルエンザ</span>
+  <span><span class="swatch" style="background:#FCFDBF;border:1px solid #bbb;"></span>その他予防接種費</span>
+  <span><span class="line-swatch"></span>年齢調整死亡数（左軸）</span>
+</div>
+
+<div style="position: relative; width: 100%; height: 370px;">
+  <canvas id="chartMain" role="img" aria-label="小金井市の年齢調整死亡数と予防接種費（ワクチン種別積上げ）の推移2010〜2025年。">
+    年齢調整死亡数：2010年1196.88→2025年1114.00。予防接種費：2021〜2022年に新型コロナ接種で約20億円超。
+  </canvas>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const years = ['2010','2011','2012','2013','2014','2015','2016','2017','2018','2019','2020','2021','2022','2023','2024','2025'];
+const asmCount = [1196.88,1198.59,1188.26,1149.66,1222.50,1165.30,1118.52,1088.74,1057.03,1079.67,1076.51,1078.31,1123.36,1095.33,1141.88,1114.00];
+
+const totalCost = [129530598,235759588,248321143,241745896,255643312,253366847,278525297,280821278,297179359,303958378,415746454,2049714833,2129153308,911103693,642602965,453431610];
+const influenza  = [24260954,20665279,20611350,21676092,26104207,27705755,29270702,28142024,28928195,33260519,93031775,39048769,83782860,38979874,36764344,38335946];
+const hpv        = [0,0,0,2064290,0,0,65576,81971,114759,543117,1961556,9341371,25991096,51907200,151558243,44371872];
+const covidAll   = [0,0,0,0,0,0,0,0,0,0,28675370,1716142610,1713070943,494575793,78697181,29099971];
+const other = totalCost.map((t,i) => Math.max(0, t - influenza[i] - hpv[i] - covidAll[i]));
+const toOku = arr => arr.map(v => Math.round(v / 1e7) / 10);
+const totalOku = toOku(totalCost);
+
+Chart.defaults.font.size = 18;
+Chart.defaults.color = '#111';
+
+// グラフ外枠を描画するカスタムプラグイン
+const chartBorderPlugin = {
+  id: 'chartBorder',
+  afterDraw(chart) {
+    const ctx = chart.ctx;
+    const { left, top, right, bottom } = chart.chartArea;
+    ctx.save();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(left, top, right - left, bottom - top);
+    ctx.fillStyle = '#000';
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('※死亡数は年ごと、予防接種費は年度ごとの集計', left, bottom + 35);
+    ctx.restore();
+  }
+};
+
+new Chart(document.getElementById('chartMain'), {
+  plugins: [chartBorderPlugin],
+  data: {
+    labels: years,
+    datasets: [
+      {
+        label: 'その他予防接種費',
+        data: toOku(other),
+        type: 'bar', yAxisID: 'y2',
+        backgroundColor: '#FCFDBF', borderColor: '#000', borderWidth: 2,
+        stack: 'cost', order: 2
+      },
+      {
+        label: 'インフルエンザ',
+        data: toOku(influenza),
+        type: 'bar', yAxisID: 'y2',
+        backgroundColor: '#FE9F6D', borderColor: '#000', borderWidth: 2,
+        stack: 'cost', order: 2
+      },
+      {
+        label: 'HPVワクチン',
+        data: toOku(hpv),
+        type: 'bar', yAxisID: 'y2',
+        backgroundColor: '#B63779', borderColor: '#000', borderWidth: 2,
+        stack: 'cost', order: 2
+      },
+      {
+        label: '新型コロナ',
+        data: toOku(covidAll),
+        type: 'bar', yAxisID: 'y2',
+        backgroundColor: '#3B0F70', borderColor: '#000', borderWidth: 2,
+        stack: 'cost', order: 2
+      },
+      {
+        label: '年齢調整死亡数',
+        data: asmCount,
+        type: 'line', yAxisID: 'y',
+        borderColor: '#E24B4A', backgroundColor: 'transparent',
+        borderWidth: 3, pointRadius: 5,
+        pointBackgroundColor: '#E24B4A', pointBorderColor: '#fff', pointBorderWidth: 2,
+        tension: 0.3, fill: false, order: 1
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    layout: { padding: { bottom: 70 } },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        titleFont: { size: 18 }, bodyFont: { size: 18 },
+        titleColor: '#111', bodyColor: '#111',
+        backgroundColor: '#fff', borderColor: '#ccc', borderWidth: 1,
+        itemSort: function(a, b) {
+          const order = ['年齢調整死亡数', '予防接種費(総額)', '新型コロナ', 'HPVワクチン', 'インフルエンザ', 'その他予防接種費'];
+          return order.indexOf(a.dataset.label) - order.indexOf(b.dataset.label);
+        },
+        callbacks: {
+          afterTitle: function(items) {
+            const i = items[0].dataIndex;
+            return `年齢調整死亡数: ${asmCount[i].toFixed(2)}人`;
+          },
+          beforeBody: function(items) {
+            const i = items[0].dataIndex;
+            return `予防接種費(総額): ${totalOku[i].toFixed(1)}億円`;
+          },
+          label: function(ctx) {
+            if (ctx.dataset.label === '年齢調整死亡数') return null;
+            return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}億円`;
+          },
+          labelColor: function(ctx) {
+            const c = ctx.dataset.backgroundColor;
+            return { borderColor: c, backgroundColor: c };
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        stacked: true,
+        ticks: { autoSkip: false, maxRotation: 50, font: { size: 18 }, color: '#111' },
+        grid: { display: false },
+        border: { color: '#333', width: 2 }
+      },
+      y: {
+        type: 'linear', position: 'left',
+        title: { display: true, text: '年齢調整死亡数（人）', font: { size: 18 }, color: '#111' },
+        min: 900, max: 1340,
+        grid: { color: 'rgba(0,0,0,0.16)', lineWidth: 1.5 },
+        ticks: { stepSize: 100, font: { size: 18 }, color: '#111', callback: v => v === 1340 ? '' : v },
+        border: { color: '#333', width: 2 }
+      },
+      y2: {
+        type: 'linear', position: 'right', stacked: true,
+        title: { display: true, text: '予防接種費（円）', font: { size: 18 }, color: '#111' },
+        min: 0, max: 22,
+        ticks: { font: { size: 18 }, color: '#111', stepSize: 5, callback: v => v === 22 ? '' : v + '億' },
+        grid: { drawOnChartArea: false },
+        border: { color: '#333', width: 2 }
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>
